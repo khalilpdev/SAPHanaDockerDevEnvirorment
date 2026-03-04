@@ -1,0 +1,172 @@
+# =============================================================================
+# docker-compose.yml
+# SAP HANA Express 2.0 + SAP Business One 10.00.300 FP 2508
+# Development environment – minimum configuration
+#
+# Usage:
+#   1. cp .env.example .env          # then edit .env with your passwords
+#   2. Place B1 installer in ./b1/media/
+#   3. docker compose up -d
+# =============================================================================
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Named volumes for data persistence
+# ---------------------------------------------------------------------------
+volumes:
+  hana_data:
+    driver: local
+  hana_log:
+    driver: local
+  b1_conf:
+    driver: local
+  b1_log:
+    driver: local
+
+# ---------------------------------------------------------------------------
+# Isolated Docker network
+# ---------------------------------------------------------------------------
+networks:
+  sap_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.20.0.0/24}
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+services:
+
+  # --------------------------------------------------------------------------
+  # SAP HANA Express 2.0
+  # Official image: saplabs/hanaexpress
+  # --------------------------------------------------------------------------
+  hxehost:
+    build:
+      context: ./hana
+      dockerfile: Dockerfile
+    image: sap-hana-express-dev:2.00.075
+    container_name: hxehost
+    hostname: hxehost
+
+    # -- Kernel parameters required by HANA --
+    # These MUST also be set on the Docker host (see README for instructions).
+    sysctls:
+      - net.ipv4.ip_local_port_range=40000 60999
+      - kernel.shmmni=524288
+      - kernel.shmall=8388608
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      nproc:
+        soft: 65536
+        hard: 65536
+
+    # -- Minimum resources for a development HANA instance --
+    # Production requires ≥24 GB RAM; for dev we allow ≥16 GB.
+    # Adjust to what your machine can spare.
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 8G
+
+    environment:
+      # Credentials are picked up from passwords.json mounted via secret
+      # (see volumes below).  The env vars below override the JSON template.
+      HANA_MASTER_PASSWORD: ${HANA_MASTER_PASSWORD:-HXEHana1}
+
+    # HANA Express reads /run/secrets/passwords.json on first start
+    volumes:
+      - hana_data:/hana/data
+      - hana_log:/hana/log
+      - ./hana/passwords.json:/run/secrets/passwords.json:ro
+      - ./hana/init.sql:/hana/shared/init.sql:ro
+
+    ports:
+      # System DB SQL
+      - "39013:39013"
+      # Tenant HXE SQL (use this from B1 and client tools)
+      - "39017:39017"
+      # HTTPS / Web tools
+      - "49013:49013"
+      - "8090:8090"
+
+    networks:
+      sap_net:
+        ipv4_address: 172.20.0.10
+
+    restart: unless-stopped
+
+    healthcheck:
+      # Check that the HANA SQL port is accepting TCP connections
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/39017' 2>/dev/null && echo OK"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s  # HANA takes a few minutes on first boot
+
+  # --------------------------------------------------------------------------
+  # SAP Business One 10.00.300 FP 2508 Server
+  # Based on openSUSE Leap 15.5 – see ./b1/Dockerfile
+  #
+  # NOTE: You must download the SAP B1 installer from SAP Service Marketplace
+  # and place it in ./b1/media/ before running `docker compose build`.
+  # --------------------------------------------------------------------------
+  b1server:
+    build:
+      context: ./b1
+      dockerfile: Dockerfile
+      args:
+        B1_INSTALLER_ARCHIVE: ${B1_INSTALLER_ARCHIVE:-B1_10.0_FP2508_FOR_HANA_LINUX_X86_64.tar.gz}
+    image: sap-b1-server-dev:10.00.300-fp2508
+    container_name: b1server
+    hostname: b1server
+
+    depends_on:
+      hxehost:
+        condition: service_healthy
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+    environment:
+      B1_HANA_HOST:     ${B1_HANA_HOST:-hxehost}
+      B1_HANA_PORT:     ${B1_HANA_PORT:-39017}
+      B1_HANA_USER:     ${B1_HANA_USER:-SYSTEM}
+      B1_HANA_PASSWORD: ${B1_HANA_PASSWORD:-HXEHana1}
+      B1_INSTALL_DIR:   /opt/sap/b1
+
+    volumes:
+      - b1_conf:/opt/sap/b1/conf
+      - b1_log:/var/log/sap
+
+    ports:
+      # SLD (System Landscape Directory)
+      - "30000:30000"
+      # License Manager
+      - "40000:40000"
+      # Service Layer HTTP
+      - "50000:50000"
+      # Service Layer HTTPS
+      - "50001:50001"
+
+    networks:
+      sap_net:
+        ipv4_address: 172.20.0.20
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:50000/b1s/v1/$metadata > /dev/null && echo OK"]
+      interval: 30s
+      timeout: 10s
+      retries: 15
+      start_period: 120s
