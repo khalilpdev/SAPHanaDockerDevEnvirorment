@@ -1,0 +1,28 @@
+# =============================================================================
+# .gitignore – SAP HANA + B1 Docker Dev Environment
+# =============================================================================
+
+# --- Sensitive configuration files ---
+.env
+
+# --- SAP installation media (large binaries, not for version control) ---
+b1/media/*.tar.gz
+b1/media/*.tar
+b1/media/*.zip
+b1/media/*.exe
+
+# --- Docker build artifacts ---
+*.tar
+
+# --- Runtime data directories ---
+volumes/
+
+# --- OS / editor artifacts ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# --- Logs ---
+*.log
